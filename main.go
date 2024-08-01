@@ -6,9 +6,15 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/widget"
 	"github.com/gocolly/colly/v2"
 	"github.com/gocolly/colly/v2/extensions"
 	"golang.org/x/text/encoding/simplifiedchinese"
@@ -16,52 +22,99 @@ import (
 )
 
 var (
-	baseURL        = "https://69shuba.cx/book/36352/"
-	outputFileName = "novel.txt"
-	hrefs          = make([]string, 0, 600)
 	wg             sync.WaitGroup
 	mu             sync.Mutex
 	contentMap     = make(map[int]string)
 	goroutineLimit = 50
 	retryLimit     = 3
 	logFormat      = "%-8s%s"
+	outputFileName = "novel.txt"
 )
 
 func main() {
+	a := app.New()
+	w := a.NewWindow("Web Scraper")
+
+	urlEntry := widget.NewEntry()
+	urlEntry.SetPlaceHolder("Enter URL here...")
+
+	selectedDirLabel := widget.NewLabel("No directory selected")
+
+	result := widget.NewLabel("")
+
+	selectDirButton := widget.NewButton("Select Output Directory", func() {
+		dialog.ShowFolderOpen(func(dir fyne.ListableURI, err error) {
+			if err != nil {
+				result.SetText(fmt.Sprintf("Failed to select directory: %v", err))
+				return
+			}
+			if dir != nil {
+				selectedDirLabel.SetText(dir.Path())
+			}
+		}, w)
+	})
+
+	startButton := widget.NewButton("Start Scraping", func() {
+		url := urlEntry.Text
+		dir := selectedDirLabel.Text
+		if url == "" {
+			result.SetText("Please enter a valid URL.")
+			return
+		}
+		if dir == "No directory selected" {
+			result.SetText("Please select a valid directory.")
+			return
+		}
+		outputPath := filepath.Join(dir, outputFileName)
+		result.SetText("Scraping in progress...")
+		scrapeWebsite(url, outputPath, result)
+	})
+
+	content := container.NewVBox(
+		widget.NewLabel("URL:"),
+		urlEntry,
+		selectDirButton,
+		selectedDirLabel,
+		startButton,
+		result,
+	)
+
+	w.SetContent(content)
+	w.Resize(fyne.NewSize(400, 200))
+	w.ShowAndRun()
+}
+
+func scrapeWebsite(baseURL string, outputFileName string, result *widget.Label) {
 	startTime := time.Now()
 
-	// 创建和配置主爬虫实例
 	mainCollector := createCollector()
 
-	// 使用主爬虫实例爬取初始页面
+	hrefs := make([]string, 0, 600)
+
 	mainCollector.OnHTML("#catalog ul li", func(e *colly.HTMLElement) {
-		fmt.Printf("%s\n", e.Text)
 		href := e.ChildAttr("a", "href")
-		fmt.Printf("Link: %s\n", href)
-		hrefs = append(hrefs, href)
+		if href != "" {
+			hrefs = append(hrefs, href)
+		}
 	})
 
 	if err := mainCollector.Visit(baseURL); err != nil {
-		log.Fatalf("Failed to visit base URL: %v", err)
+		result.SetText(fmt.Sprintf("Failed to visit base URL: %v", err))
+		return
 	}
 
-	mainCollector.Visit(baseURL)
-
 	sem := make(chan struct{}, goroutineLimit)
-	// 对每个 href 使用 goroutine 并创建新的爬虫实例
 	for idx, href := range hrefs {
 		wg.Add(1)
-		sem <- struct{}{} // 向通道发送一个值，阻塞直到通道有空间
+		sem <- struct{}{}
 		go func(idx int, href string) {
 			defer wg.Done()
-			defer func() { <-sem }() // 从通道读取一个值，释放空间
+			defer func() { <-sem }()
 			startGoroutine := time.Now()
 			fullURL := href
 
-			// 创建和配置新的爬虫实例
 			pageCollector := createCollector()
 			pageCollector.OnHTML(".txtnav", func(e *colly.HTMLElement) {
-				// 抓取内容
 				content := e.Text
 				mu.Lock()
 				contentMap[idx] = content
@@ -82,45 +135,43 @@ func main() {
 			}
 
 			endGoroutine := time.Now()
-			fmt.Printf("Goroutine ended for URL: %s at %v\n", href, endGoroutine)
-			fmt.Printf("Duration for URL %s: %v\n", href, endGoroutine.Sub(startGoroutine))
+			log.Printf("Goroutine ended for URL: %s at %v", href, endGoroutine)
+			log.Printf("Duration for URL %s: %v", href, endGoroutine.Sub(startGoroutine))
 		}(idx, href)
 	}
 
 	wg.Wait()
 
-	// 创建输出文件
 	file, err := os.Create(outputFileName)
 	if err != nil {
-		log.Fatal(err)
+		result.SetText(fmt.Sprintf("Failed to create output file: %v", err))
+		return
 	}
 	defer file.Close()
 
-	// 按顺序写入文件
 	for idx := 0; idx < len(hrefs); idx++ {
 		if content, ok := contentMap[idx]; ok {
 			_, err := file.WriteString(content + "\n")
 			if err != nil {
-				log.Fatal(err)
+				result.SetText(fmt.Sprintf("Failed to write to file: %v", err))
+				return
 			}
 		}
 	}
 
 	endTime := time.Now()
 	duration := endTime.Sub(startTime)
-
-	fmt.Printf("Finished scraping. Content saved to %s\n", outputFileName)
-	fmt.Printf("Total execution time: %s\n", duration)
+	result.SetText(fmt.Sprintf("Finished scraping. Content saved to %s\nTotal execution time: %s", outputFileName, duration))
 }
 
-// 创建和配置 colly.Collector 的函数
 func createCollector() *colly.Collector {
 	c := colly.NewCollector()
 
-	// c.Limit(&colly.LimitRule{
-	// 	DomainGlob:  "*",
-	// 	RandomDelay: 2 * time.Second,
-	// })
+	c.Limit(&colly.LimitRule{
+		DomainGlob:  "*",
+		RandomDelay: 2 * time.Second,
+	})
+
 	extensions.RandomUserAgent(c)
 
 	c.DetectCharset = false
@@ -129,17 +180,12 @@ func createCollector() *colly.Collector {
 	c.OnRequest(setReferer)
 
 	c.OnResponse(func(r *colly.Response) {
-		// 使用 GBK 解码器创建一个新的 Reader
 		reader := transform.NewReader(bytes.NewReader(r.Body), simplifiedchinese.GBK.NewDecoder())
-
-		// 读取转换后的内容
 		body, err := io.ReadAll(reader)
 		if err != nil {
-			fmt.Println("Failed to read response body:", err)
+			log.Println("Failed to read response body:", err)
 			return
 		}
-
-		// 更新响应的 Body
 		r.Body = body
 	})
 
@@ -150,7 +196,6 @@ func createCollector() *colly.Collector {
 	return c
 }
 
-// 设置 Referer
 func setReferer(r *colly.Request) {
 	r.Headers.Set("Connection", "keep-alive")
 	r.Headers.Set("Content-Type", "text/html")
