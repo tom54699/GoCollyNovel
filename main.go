@@ -15,14 +15,17 @@ import (
 	"golang.org/x/text/transform"
 )
 
-var baseURL = "https://69shuba.cx/book/36352/"
-var logFormat = "%-8s%s"
-var outputFileName = "novel"
-var hrefs = make([]string, 0, 600)
-var wg sync.WaitGroup
-var mu sync.Mutex
-var contentMap = make(map[int]string)
-var goroutineLimit = 50
+var (
+	baseURL        = "https://69shuba.cx/book/36352/"
+	outputFileName = "novel.txt"
+	hrefs          = make([]string, 0, 600)
+	wg             sync.WaitGroup
+	mu             sync.Mutex
+	contentMap     = make(map[int]string)
+	goroutineLimit = 50
+	retryLimit     = 3
+	logFormat      = "%-8s%s"
+)
 
 func main() {
 	startTime := time.Now()
@@ -37,6 +40,10 @@ func main() {
 		fmt.Printf("Link: %s\n", href)
 		hrefs = append(hrefs, href)
 	})
+
+	if err := mainCollector.Visit(baseURL); err != nil {
+		log.Fatalf("Failed to visit base URL: %v", err)
+	}
 
 	mainCollector.Visit(baseURL)
 
@@ -61,7 +68,18 @@ func main() {
 				mu.Unlock()
 			})
 
-			pageCollector.Visit(fullURL)
+			for attempt := 1; attempt <= retryLimit; attempt++ {
+				err := pageCollector.Visit(fullURL)
+				if err == nil {
+					break
+				}
+				if attempt < retryLimit {
+					log.Printf("Retrying URL %s (attempt %d/%d)", fullURL, attempt, retryLimit)
+					time.Sleep(time.Second * time.Duration(attempt))
+				} else {
+					log.Printf("Failed to visit URL %s after %d attempts", fullURL, retryLimit)
+				}
+			}
 
 			endGoroutine := time.Now()
 			fmt.Printf("Goroutine ended for URL: %s at %v\n", href, endGoroutine)
