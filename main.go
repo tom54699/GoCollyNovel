@@ -22,6 +22,7 @@ var hrefs = make([]string, 0, 600)
 var wg sync.WaitGroup
 var mu sync.Mutex
 var contentMap = make(map[int]string)
+var goroutineLimit = 50
 
 func main() {
 	startTime := time.Now()
@@ -39,11 +40,14 @@ func main() {
 
 	mainCollector.Visit(baseURL)
 
+	sem := make(chan struct{}, goroutineLimit)
 	// 对每个 href 使用 goroutine 并创建新的爬虫实例
 	for idx, href := range hrefs {
 		wg.Add(1)
+		sem <- struct{}{} // 向通道发送一个值，阻塞直到通道有空间
 		go func(idx int, href string) {
 			defer wg.Done()
+			defer func() { <-sem }() // 从通道读取一个值，释放空间
 			startGoroutine := time.Now()
 			fullURL := href
 

@@ -1,4 +1,4 @@
-module scraper
+module novel-scraper
 
 go 1.21.6
 
