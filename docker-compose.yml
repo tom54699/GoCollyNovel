@@ -1,0 +1,81 @@
+version: "3.7"
+
+services:
+    app:
+        build: ./go-novel-scraper
+        container_name: novel_scraper_app
+        restart: always
+        env_file: .env
+        environment:
+          - COMPOSE_PROJECT_NAME
+          - TZ
+        depends_on:
+          redis:
+            condition: service_healthy
+          mongodb:
+            condition: service_healthy
+        networks:
+          - novel_scraper_network
+
+    nginx:
+        build: ./nginx
+        container_name: nginx
+        restart: always
+        environment:
+            - COMPOSE_PROJECT_NAME
+            - TZ
+        depends_on:
+          - app
+        ports:
+            - "8111:80"
+        networks:
+            - novel_scraper_network
+
+    redis:
+        build: ./redis
+        container_name: redis
+        restart: always
+        environment:
+            - COMPOSE_PROJECT_NAME
+            - TZ
+        healthcheck:
+            test: ["CMD", "redis-cli", "ping"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+            start_period: 5s
+        ports:
+          - "6380:6379"
+        volumes:
+          - ./redis/data:/data
+        networks:
+          - novel_scraper_network
+
+
+    mongodb:
+      image: mongo:6.0.13
+      container_name: mongodb
+      restart: always
+      environment:
+        - MONGO_INITDB_ROOT_USERNAME
+        - MONGO_INITDB_ROOT_PASSWORD
+        - MONGO_INITDB_DATABASE
+        - TZ
+      volumes: 
+        - ./mongodb/initdb.d/:/docker-entrypoint-initdb.d/
+        - ./mongodb/configdb:/data/configdb
+        - ./mongodb/data:/data/db
+
+      healthcheck:
+          test: ["CMD","mongosh", "--eval", "db.adminCommand('ping')"]
+          interval: 30s
+          timeout: 5s
+          retries: 3
+          start_period: 5s
+      ports: 
+        - '27017:27017'
+      networks:
+        - novel_scraper_network
+
+networks:
+    novel_scraper_network:
